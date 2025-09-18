@@ -30,6 +30,7 @@ import threading
 import time
 from urllib.parse import urlencode
 from urllib.parse import urlparse
+from datetime import datetime
 
 import bleach
 import paho.mqtt.client
@@ -48,6 +49,7 @@ except ImportError:
 import gntp.notifier
 import facebook
 import twitter
+import pylast
 
 import plexpy
 from plexpy import common
@@ -89,7 +91,8 @@ AGENT_IDS = {'growl': 0,
              'lunasea': 27,
              'microsoftteams': 28,
              'gotify': 29,
-             'ntfy': 30
+             'ntfy': 30,
+             'lastfm': 31
              }
 
 DEFAULT_CUSTOM_CONDITIONS = [{'parameter': '', 'operator': '', 'value': [], 'type': None}]
@@ -172,6 +175,12 @@ def available_notification_agents():
                'id': AGENT_IDS['xbmc'],
                'class': XBMC,
                'action_types': ('all',)
+               },
+              {'label': 'last.fm',
+               'name': 'lastfm',
+               'id': AGENT_IDS['lastfm'],
+               'class': LASTFM,
+               'action_types': ('on_play', 'on_stop', 'on_pause', 'on_resume', 'on_watched')
                },
               {'label': 'LunaSea',
                'name': 'lunasea',
@@ -2171,6 +2180,130 @@ class JOIN(Notifier):
                           }
                          ]
 
+        return config_option
+
+class LASTFM(Notifier):
+    """
+    lastfm scrobbling
+    """
+    NAME = 'last.fm'
+    _DEFAULT_CONFIG = {'user_id': '',
+                       'lfm_username': '',
+                       'lfm_pass': '',
+                       'api_key': '',
+                       'api_sec': '',
+                       'network': None,
+                       }
+
+    def _net_check(self):
+        if self.config['network'] is None:
+            self.config['network']= pylast.LastFMNetwork(
+                api_key=self.config['api_key'], api_secret=self.config['api_sec'],
+                username=self.config['lfm_username'], password_hash=pylast.md5(self.config['lfm_pass'])
+            )
+        return
+
+    def _get_mbid(self, info):
+        mbid = list(map(lambda x: x[7:], filter(lambda x: x.startswith('mbid://'), info.get('guids', []))))
+        if len(mbid) > 0:
+            return mbid[0]
+        return None
+
+    def _send_scrobble(self, info):
+        self._net_check()
+
+        logger.info("Tautulli Notifiers :: Scrobbling {track} by {artist} to last.fm.".format(
+            track=info['title'], artist=info['grandparent_title']))
+        self.config['network'].scrobble(
+            artist = info['artist_name'],
+            title = info['track_name'],
+            timestamp = int(datetime.utcnow().timestamp()),
+            album = info.get('album_name', None),
+            album_artist = None, #TODO: maybe check this?
+            track_number = info.get('track_number', None),
+            duration = info.get('duration_sec', None),
+            mbid = self._get_mbid(info),
+        )
+        return
+
+    def _send_now_playing(self, info):
+        self._net_check()
+
+        logger.info("Tautulli Notifiers :: Updating now playing on last.fm: {track} by {artist}.".format(
+            track=info['title'], artist=info['grandparent_title']))
+        self.config['network'].update_now_playing(
+            artist = info['artist_name'],
+            title = info['track_name'],
+            album = info.get('album_name', None),
+            album_artist = None, #TODO: maybe check this?
+            duration = info.get('duration_sec', None),
+            track_number = info.get('track_number', None),
+            mbid = self._get_mbid(info),
+        )
+        return
+
+    def agent_notify(self, subject='', body='', action='', **kwargs):
+        if not self.config['api_key']:
+            logger.error("Tautulli Notifiers :: %s notification failed: %s",
+                         self.NAME, "missing api key")
+        if not self.config['api_sec']:
+            logger.error("Tautulli Notifiers :: %s notification failed: %s",
+                         self.NAME, "missing api secret")
+        if not self.config['lfm_username']:
+            logger.error("Tautulli Notifiers :: %s notification failed: %s",
+                         self.NAME, "missing lfm username")
+        if not self.config['lfm_pass']:
+            logger.error("Tautulli Notifiers :: %s notification failed: %s",
+                         self.NAME, "missing lfm password")
+
+        info = kwargs['parameters']
+        if info is None:
+            return
+
+        if info.get('media_type', '') != "track":
+            return
+        if info.get('user', '') != self.config['user_id']:
+            return
+
+        if action == 'resume' or action == 'play':
+            self._send_now_playing(info)
+        elif action == 'watched':
+            self._send_scrobble(info)
+
+    def _return_config_options(self):
+        config_option = [{'label': 'Plex User(s)',
+                          'value': self.config['user_id'],
+                          'name': 'lastfm_user_id',
+                          'description': 'Select which Plex User to scrobble for',
+                          'input_type': 'select',
+                          'select_options': dict(map(lambda x: (x['username'], x['friendly_name']),
+                                                     users.Users().get_users()))
+                          },
+                         {'label': 'last.fm username',
+                          'value': self.config['lfm_username'],
+                          'name': 'lastfm_lfm_username',
+                          'description': 'lastfm account to scrobble to',
+                          'input_type': 'text'
+                          },
+                         {'label': 'last.fm password',
+                          'value': self.config['lfm_pass'],
+                          'name': 'lastfm_lfm_pass',
+                          'description': 'lastfm password',
+                          'input_type': 'password'
+                          },
+                         {'label': 'api key',
+                          'value': self.config['api_key'],
+                          'name': 'lastfm_api_key',
+                          'description': 'lastfm api key',
+                          'input_type': 'token',
+                          },
+                         {'label': 'api secret',
+                          'value': self.config['api_sec'],
+                          'name': 'lastfm_api_sec',
+                          'description': 'lastfm api secret',
+                          'input_type': 'token',
+                          },
+                         ]
         return config_option
 
 
